@@ -1,0 +1,6 @@
+{
+  "name": "TripMate - All-in-One Travel Planning & Booking",
+  "description": "Plan your trip, book tickets, hotels, tourist attractions, and customize day-by-day itineraries all in one place.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
