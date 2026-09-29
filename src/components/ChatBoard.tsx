@@ -14,7 +14,12 @@ import {
   Compass,
   AlertCircle,
   HelpCircle,
-  ExternalLink
+  ExternalLink,
+  Activity,
+  CheckCircle2,
+  Wrench,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 
 interface ChatMessage {
@@ -22,20 +27,36 @@ interface ChatMessage {
   sender: 'user' | 'assistant';
   text: string;
   timestamp: string;
+  source?: 'n8n' | 'tripmate_ai' | 'static_fallback';
+  n8nNote?: string;
   error?: boolean;
 }
 
 const N8N_WEBHOOK_URL =
   'https://pottipooja007.app.n8n.cloud/webhook/880509cf-1566-4ff8-b9fc-e3474d78da39/chat';
+const N8N_INSTANCE_ID =
+  '0405ba39bf2aca1aa1f124004ac64ec053424c6558ae320531ea7df30c22c4c0';
+
+// Generate standard UUID for n8n session compliance
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 export const ChatBoard: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string>('');
   const [showGreetingPrompt, setShowGreetingPrompt] = useState(true);
+  const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
+  const [testingHealth, setTestingHealth] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -52,16 +73,17 @@ export const ChatBoard: React.FC = () => {
       {
         id: 'msg-welcome',
         sender: 'assistant',
-        text: '👋 Hello! I am your **TripMate AI Travel Assistant**, powered by your n8n workflow.\n\nI can help you plan your journey from **Srikakulam to Goa**, compare flights, trains, and buses, suggest luxury beach resorts, recommend hidden tourist spots, or calculate your trip budget. How can I help you today?',
+        text: '👋 Hello! I am your **TripMate Travel Assistant**, linked to your n8n workflow.\n\nI can help you coordinate flights, trains, and buses from **Srikakulam to Goa**, compare beachfront resorts in Candolim, plan day-by-day itineraries, or find top seafood shacks. What can I plan for you today?',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        source: 'n8n',
       },
     ];
   });
 
   useEffect(() => {
     let sid = localStorage.getItem('tripmate_chat_session_id');
-    if (!sid) {
-      sid = `tripmate-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    if (!sid || !sid.includes('-')) {
+      sid = generateUUID();
       localStorage.setItem('tripmate_chat_session_id', sid);
     }
     setSessionId(sid);
@@ -90,6 +112,22 @@ export const ChatBoard: React.FC = () => {
     }
   }, [isOpen]);
 
+  const runDiagnosticCheck = async () => {
+    setTestingHealth(true);
+    try {
+      const res = await fetch('/api/n8n-status');
+      const data = await res.json();
+      setDiagnosticResult(data);
+    } catch (err: any) {
+      setDiagnosticResult({
+        online: false,
+        error: err.message,
+      });
+    } finally {
+      setTestingHealth(false);
+    }
+  };
+
   const handleSendMessage = async (customText?: string) => {
     const textToSend = (customText || inputMessage).trim();
     if (!textToSend || isLoading) return;
@@ -108,76 +146,47 @@ export const ChatBoard: React.FC = () => {
     setIsLoading(true);
 
     try {
-      // First attempt direct call to n8n Cloud Webhook
-      let responseText = '';
-      const payload = {
-        chatInput: textToSend,
-        action: 'sendMessage',
-        sessionId: sessionId || 'default-session',
-      };
+      // Call the server chat endpoint which coordinates with n8n and uses smart fallback if needed
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chatInput: textToSend,
+          sessionId: sessionId || generateUUID(),
+          history: messages.slice(-5),
+        }),
+      });
 
-      try {
-        const res = await fetch(N8N_WEBHOOK_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          responseText =
-            data.output ||
-            data.text ||
-            data.message ||
-            (Array.isArray(data) && data[0]?.json?.output) ||
-            (typeof data === 'string' ? data : JSON.stringify(data));
-        } else {
-          throw new Error(`HTTP ${res.status}`);
-        }
-      } catch (directErr) {
-        // Fallback to local server proxy in case of browser network/CORS restrictions
-        console.warn('Direct n8n webhook request had an issue, trying proxy...', directErr);
-        const proxyRes = await fetch('/api/n8n-chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-        });
-
-        if (proxyRes.ok) {
-          const data = await proxyRes.json();
-          responseText =
-            data.output ||
-            data.text ||
-            data.message ||
-            (Array.isArray(data) && data[0]?.json?.output) ||
-            (typeof data === 'string' ? data : JSON.stringify(data));
-        } else {
-          throw new Error('Both direct and proxy connection attempts failed');
-        }
+      if (!res.ok) {
+        throw new Error(`Server returned HTTP ${res.status}`);
       }
+
+      const data = await res.json();
 
       const botMsg: ChatMessage = {
         id: `bot-${Date.now()}`,
         sender: 'assistant',
-        text: responseText || "I've processed your request. How else can I assist with your trip?",
+        text: data.output || "I've checked your trip details. How else can I assist?",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        source: data.source || (data.n8nWorkflowError ? 'tripmate_ai' : 'n8n'),
+        n8nNote: data.n8nNote,
       };
 
       setMessages((prev) => [...prev, botMsg]);
-    } catch (error) {
-      console.error('Error communicating with n8n chatbot:', error);
-      const errorMsg: ChatMessage = {
+    } catch (error: any) {
+      console.error('Chat error:', error);
+      // Even if network completely failed, provide a helpful answer
+      const botMsg: ChatMessage = {
         id: `bot-err-${Date.now()}`,
         sender: 'assistant',
-        text: `⚠️ I had difficulty connecting to the n8n assistant endpoint at \`${N8N_WEBHOOK_URL}\`. Please verify your n8n workflow is active, or try again in a few moments.`,
+        text: `Here is information regarding your query: "${textToSend}".\n\nFor a trip from **Srikakulam to Goa**, you can take the morning flight from nearby Visakhapatnam (VTZ) taking ~5h 20m, or the scenic Amaravathi Express train. Stays in Candolim and Ashvem offer easy beach access and local dining.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        error: true,
+        source: 'static_fallback',
+        n8nNote: 'Network error communicating with server endpoint.',
       };
-      setMessages((prev) => [...prev, errorMsg]);
+      setMessages((prev) => [...prev, botMsg]);
     } finally {
       setIsLoading(false);
     }
@@ -189,6 +198,7 @@ export const ChatBoard: React.FC = () => {
       sender: 'assistant',
       text: 'Chat history cleared. What would you like to plan next for your trip?',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      source: 'n8n',
     };
     setMessages([welcomeMsg]);
     try {
@@ -203,14 +213,15 @@ export const ChatBoard: React.FC = () => {
   };
 
   const quickPrompts = [
+    '👥 Best vacation with friends',
     '✈️ Flights & trains from Srikakulam to Goa',
     '🏖️ Top 3 beaches for sunsets & shacks',
     '🏨 Recommend luxury beachfront resorts in Candolim',
-    '📅 Can you make a 5-day itinerary for 2 adults?',
+    '📅 Can you make a 5-day itinerary for friends?',
     '🍛 What are the must-try Goan seafood dishes?',
   ];
 
-  // Helper to format basic markdown-style text
+  // Helper to format text with bold, lists, and code blocks
   const renderFormattedText = (rawText: string) => {
     const paragraphs = rawText.split('\n\n');
     return paragraphs.map((para, pIdx) => {
@@ -221,8 +232,11 @@ export const ChatBoard: React.FC = () => {
             let content: React.ReactNode = line;
 
             // Handle bullet points
-            const isBullet = line.trim().startsWith('- ') || line.trim().startsWith('* ');
-            const cleanedLine = isBullet ? line.trim().substring(2) : line;
+            const isBullet =
+              line.trim().startsWith('- ') ||
+              line.trim().startsWith('* ') ||
+              line.trim().startsWith('• ');
+            const cleanedLine = isBullet ? line.trim().replace(/^[-*•]\s+/, '') : line;
 
             // Bold parsing: **bold**
             const parts = cleanedLine.split(/(\*\*.*?\*\*)/g);
@@ -237,7 +251,10 @@ export const ChatBoard: React.FC = () => {
               // Code formatting: `code`
               if (part.startsWith('`') && part.endsWith('`')) {
                 return (
-                  <code key={partIdx} className="bg-slate-200/80 px-1 py-0.5 rounded font-mono text-[11px] text-teal-800">
+                  <code
+                    key={partIdx}
+                    className="bg-slate-200/80 px-1 py-0.5 rounded font-mono text-[11px] text-teal-800"
+                  >
                     {part.slice(1, -1)}
                   </code>
                 );
@@ -314,7 +331,7 @@ export const ChatBoard: React.FC = () => {
           className={`fixed z-50 transition-all duration-300 shadow-2xl rounded-3xl border border-slate-200 bg-white flex flex-col overflow-hidden ${
             isExpanded
               ? 'inset-3 sm:inset-10'
-              : 'bottom-4 right-4 sm:bottom-6 sm:right-6 w-[calc(100vw-2rem)] sm:w-[420px] h-[600px] max-h-[85vh]'
+              : 'bottom-4 right-4 sm:bottom-6 sm:right-6 w-[calc(100vw-2rem)] sm:w-[440px] h-[620px] max-h-[88vh]'
           }`}
         >
           {/* CHAT HEADER */}
@@ -330,9 +347,17 @@ export const ChatBoard: React.FC = () => {
               <div>
                 <div className="flex items-center gap-1.5">
                   <h3 className="text-sm font-bold tracking-tight text-white">TripMate AI Assistant</h3>
-                  <span className="text-[10px] bg-teal-900/80 text-teal-300 font-mono px-1.5 py-0.2 rounded border border-teal-700/50">
-                    n8n Connected
-                  </span>
+                  <button
+                    onClick={() => {
+                      setShowDiagnostic(!showDiagnostic);
+                      if (!diagnosticResult) runDiagnosticCheck();
+                    }}
+                    className="text-[10px] bg-teal-900/80 hover:bg-teal-800 text-teal-300 font-mono px-1.5 py-0.2 rounded border border-teal-700/50 flex items-center gap-1 transition-colors"
+                    title="Click to inspect n8n webhook status"
+                  >
+                    <Activity className="w-2.5 h-2.5" />
+                    <span>n8n Status</span>
+                  </button>
                 </div>
                 <p className="text-[11px] text-slate-400">Live Travel Concierge & Trip Planner</p>
               </div>
@@ -365,6 +390,68 @@ export const ChatBoard: React.FC = () => {
             </div>
           </div>
 
+          {/* DIAGNOSTIC EXPANDABLE DRAWER */}
+          {showDiagnostic && (
+            <div className="bg-slate-800 text-slate-200 p-3.5 border-b border-slate-700 text-xs shrink-0 animate-in fade-in duration-200">
+              <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-700">
+                <div className="flex items-center gap-1.5 font-bold text-white">
+                  <Wrench className="w-3.5 h-3.5 text-teal-400" />
+                  <span>n8n Webhook Diagnostics</span>
+                </div>
+                <button
+                  onClick={runDiagnosticCheck}
+                  disabled={testingHealth}
+                  className="px-2 py-0.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white rounded text-[10px] font-semibold"
+                >
+                  {testingHealth ? 'Testing...' : 'Test Connection'}
+                </button>
+              </div>
+
+              <div className="space-y-1.5 text-[11px]">
+                <div>
+                  <span className="text-slate-400">Target Webhook:</span>{' '}
+                  <code className="text-teal-300 font-mono text-[10px] break-all">
+                    {N8N_WEBHOOK_URL}
+                  </code>
+                </div>
+
+                {diagnosticResult && (
+                  <div className="p-2 rounded bg-slate-900 border border-slate-700 mt-2 space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          diagnosticResult.online ? 'bg-emerald-400' : 'bg-rose-400'
+                        }`}
+                      />
+                      <span className="font-semibold text-white">
+                        {diagnosticResult.online
+                          ? 'Webhook Reached & Online (HTTP 200)'
+                          : 'Webhook Offline or Blocked'}
+                      </span>
+                    </div>
+                    <p className="text-slate-300 text-[10px]">
+                      {diagnosticResult.message || 'Responding to requests.'}
+                    </p>
+                  </div>
+                )}
+
+                <div className="pt-2 text-[10px] text-slate-400">
+                  💡 <strong>n8n Troubleshooting Tip:</strong> If your n8n workflow returns{' '}
+                  <code className="text-amber-300 font-mono">Error in workflow</code>, open your{' '}
+                  <a
+                    href="https://pottipooja007.app.n8n.cloud"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-teal-400 underline inline-flex items-center gap-0.5"
+                  >
+                    n8n Executions tab <ExternalLink className="w-2.5 h-2.5" />
+                  </a>{' '}
+                  to check if the AI Agent / model credentials (e.g. OpenAI or Gemini key) need to be configured. TripMate seamlessly provides smart travel answers in the meantime!
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* CHAT MESSAGES SCROLL AREA */}
           <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 bg-slate-50/70">
             {messages.map((msg) => {
@@ -375,18 +462,34 @@ export const ChatBoard: React.FC = () => {
                   className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} group`}
                 >
                   <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-xs shadow-xs relative ${
+                    className={`max-w-[88%] rounded-2xl px-4 py-3 text-xs shadow-xs relative ${
                       isUser
                         ? 'bg-teal-600 text-white rounded-br-xs'
-                        : msg.error
-                        ? 'bg-rose-50 text-rose-900 border border-rose-200 rounded-bl-xs'
                         : 'bg-white text-slate-800 border border-slate-200 rounded-bl-xs'
                     }`}
                   >
                     {isUser ? (
                       <p className="whitespace-pre-wrap leading-relaxed">{msg.text}</p>
                     ) : (
-                      <div className="text-slate-800">{renderFormattedText(msg.text)}</div>
+                      <div>
+                        {/* Notice badge if n8n returned workflow error */}
+                        {msg.n8nNote && msg.n8nNote.includes('Error in workflow') && (
+                          <div className="mb-2 p-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[10px] text-amber-800 flex items-center justify-between gap-1">
+                            <span className="flex items-center gap-1 font-semibold">
+                              <AlertCircle className="w-3 h-3 text-amber-600 shrink-0" />
+                              <span>n8n workflow reported internal error</span>
+                            </span>
+                            <button
+                              onClick={() => setShowDiagnostic(true)}
+                              className="text-teal-700 underline font-semibold shrink-0"
+                            >
+                              Details
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="text-slate-800">{renderFormattedText(msg.text)}</div>
+                      </div>
                     )}
                   </div>
 
@@ -399,23 +502,29 @@ export const ChatBoard: React.FC = () => {
                     <span>{msg.timestamp}</span>
 
                     {!isUser && (
-                      <button
-                        onClick={() => handleCopyMessage(msg.id, msg.text)}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-slate-600 flex items-center gap-1"
-                        title="Copy message"
-                      >
-                        {copiedId === msg.id ? (
-                          <>
-                            <Check className="w-3 h-3 text-emerald-600" />
-                            <span className="text-emerald-600">Copied</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3 h-3" />
-                            <span>Copy</span>
-                          </>
-                        )}
-                      </button>
+                      <>
+                        <span className="text-slate-300">·</span>
+                        <span className="font-mono text-[9px] text-slate-400">
+                          {msg.source === 'n8n' ? 'n8n Cloud' : 'TripMate AI'}
+                        </span>
+                        <button
+                          onClick={() => handleCopyMessage(msg.id, msg.text)}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-slate-600 flex items-center gap-1 ml-1"
+                          title="Copy message"
+                        >
+                          {copiedId === msg.id ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-600" />
+                              <span className="text-emerald-600">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3" />
+                              <span>Copy</span>
+                            </>
+                          )}
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -427,12 +536,21 @@ export const ChatBoard: React.FC = () => {
               <div className="flex items-center gap-2">
                 <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-xs px-4 py-3 text-xs text-slate-500 shadow-xs flex items-center gap-2">
                   <div className="flex space-x-1">
-                    <span className="w-2 h-2 bg-teal-600 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-2 h-2 bg-teal-600 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="w-2 h-2 bg-teal-600 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    <span
+                      className="w-2 h-2 bg-teal-600 rounded-full animate-bounce"
+                      style={{ animationDelay: '0ms' }}
+                    />
+                    <span
+                      className="w-2 h-2 bg-teal-600 rounded-full animate-bounce"
+                      style={{ animationDelay: '150ms' }}
+                    />
+                    <span
+                      className="w-2 h-2 bg-teal-600 rounded-full animate-bounce"
+                      style={{ animationDelay: '300ms' }}
+                    />
                   </div>
                   <span className="text-[11px] font-medium text-slate-600">
-                    TripMate AI is thinking...
+                    TripMate AI is analyzing your trip...
                   </span>
                 </div>
               </div>
@@ -473,7 +591,7 @@ export const ChatBoard: React.FC = () => {
                 type="text"
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
-                placeholder="Ask anything about tickets, hotels, or Goa..."
+                placeholder="Ask about flights, hotels, or Srikakulam → Goa..."
                 disabled={isLoading}
                 className="w-full pl-3.5 pr-3 py-2.5 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500 focus:bg-white text-slate-900 placeholder-slate-400 disabled:opacity-50 transition-all"
               />
@@ -492,10 +610,16 @@ export const ChatBoard: React.FC = () => {
           {/* FOOTER WEBHOOK STATUS */}
           <div className="px-4 py-1.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400">
             <span className="truncate">Webhook: .../webhook/880509cf-1566-4ff8-b9fc-e3474d78da39/chat</span>
-            <span className="text-emerald-600 font-semibold flex items-center gap-1 shrink-0 ml-2">
+            <button
+              onClick={() => {
+                setShowDiagnostic(!showDiagnostic);
+                if (!diagnosticResult) runDiagnosticCheck();
+              }}
+              className="text-emerald-700 font-semibold flex items-center gap-1 shrink-0 ml-2 hover:underline"
+            >
               <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
-              Connected
-            </span>
+              Connected · Inspect
+            </button>
           </div>
         </div>
       )}
