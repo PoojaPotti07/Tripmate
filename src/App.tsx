@@ -17,6 +17,7 @@ import { BudgetAndChecklist } from './components/BudgetAndChecklist';
 import { MapAndEmergency } from './components/MapAndEmergency';
 import { BookingTicketModal } from './components/BookingTicketModal';
 import { MyBookingsModal } from './components/MyBookingsModal';
+import { ChatBoard } from './components/ChatBoard';
 import {
   SearchQuery,
   TransportOption,
@@ -265,6 +266,9 @@ export default function App() {
       {isBookingsModalOpen && (
         <MyBookingsModal bookings={bookings} onClose={() => setIsBookingsModalOpen(false)} />
       )}
+
+      {/* n8n AI Chatboard */}
+      <ChatBoard />
 
       {/* Footer */}
       <footer className="bg-slate-950 text-slate-400 py-12 border-t border-slate-800 no-print">
